@@ -12,6 +12,7 @@ const watchName = document.getElementById("watch-name") as HTMLSpanElement;
 
 const urlParams = new URLSearchParams(window.location.search);
 const name = urlParams.get("name") ?? "demo/me";
-publish.setAttribute("url", `http://localhost:4443/${name}.hang`);
+console.log(name);
+publish.setAttribute("url", `https://relay.xn--tlay-0ra.com/anon/${name}.hang`);
 watch.href = `index.html?name=${name}`;
 watchName.textContent = name;

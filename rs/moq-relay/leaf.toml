@@ -31,20 +31,20 @@ tls.generate = ["localhost"]
 #  user -> leaf -> leaf -> user
 [cluster]
 # Connect to this hostname in order to discover other nodes.
-connect = "localhost:4443"
+connect = "tülay.com:4443"
 
 # Use the token in this file when connecting to other nodes.
 # `just auth` will populate this file.
 token = "dev/leaf.jwt"
 
 # My hostname, which must be accessible from other nodes.
-advertise = "localhost:4444"
+advertise = "tülay.com:4444"
 
 # Each leaf node will connect to the root node and other nodes, using this configuration.
 [client]
 # QUIC uses TLS to have the client verify the server's identity.
 # However if you're not worried about man-in-the-middle attacks, you can disable verification:
-tls.disable_verify = true
+#tls.disable_verify = true
 
 # A better approach is to generate a server certificate and configure the client to accept it.
 #
@@ -59,9 +59,11 @@ tls.disable_verify = true
 
 [auth]
 # `just leaf` will populate this file.
-key = "dev/root.jwk"
+key = '{"alg":"HS256","key_ops":["sign","verify"],"k":"I_O2HJJVdjDG86vTmRQRzISRN0XO3ECvo2JCgMYQF6U="}'
 
 # Special auth logic based on the path.
 [auth.path.demo]
 # In this case, we're disabling authentication for paths that start with `demo/` to make it easier to test.
 key = ""
+[auth.path.anon]
+key=""

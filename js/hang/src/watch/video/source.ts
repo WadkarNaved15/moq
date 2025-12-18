@@ -196,8 +196,11 @@ export class Source {
 		effect.cleanup(() => sub.close());
 
 		// Create consumer that reorders groups/frames up to the provided latency.
+		// Container defaults to "legacy" via Zod schema for backward compatibility
+		console.log(`[Video Subscriber] Using container format: ${config.container}`);
 		const consumer = new Frame.Consumer(sub, {
 			latency: this.latency,
+			container: config.container,
 		});
 		effect.cleanup(() => consumer.close());
 

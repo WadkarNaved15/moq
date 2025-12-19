@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{str::FromStr, sync::Arc};
 
 use moq_lite::coding::Buf;
 
@@ -31,8 +31,10 @@ impl Publish {
 
 	pub fn media_ordered(&mut self, broadcast: Id, format: &str, mut init: &[u8]) -> Result<Id, Error> {
 		let broadcast = self.broadcasts.get(broadcast).ok_or(Error::NotFound)?;
-		let mut decoder = hang::import::Decoder::new(broadcast.clone(), format)
-			.ok_or_else(|| Error::UnknownFormat(format.to_string()))?;
+
+		let format =
+			hang::import::DecoderFormat::from_str(format).map_err(|_| Error::UnknownFormat(format.to_string()))?;
+		let mut decoder = hang::import::Decoder::new(broadcast.clone(), format);
 
 		decoder
 			.initialize(&mut init)

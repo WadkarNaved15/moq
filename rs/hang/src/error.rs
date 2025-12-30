@@ -7,7 +7,7 @@ use std::sync::Arc;
 #[derive(Debug, thiserror::Error, Clone)]
 pub enum Error {
 	/// An error from the underlying MoQ transport layer.
-	#[error("transfork error: {0}")]
+	#[error("moq lite error: {0}")]
 	Moq(#[from] moq_lite::Error),
 
 	/// Failed to decode a message at the MoQ transport layer.
@@ -53,6 +53,29 @@ pub enum Error {
 	/// Failed to decode hexadecimal data.
 	#[error("hex error: {0}")]
 	Hex(#[from] hex::FromHexError),
+
+	/// The timestamp is too large.
+	#[error("timestamp overflow")]
+	TimestampOverflow(#[from] crate::TimestampOverflow),
+
+	/// The track must start with a keyframe.
+	#[error("must start with a keyframe")]
+	MissingKeyframe,
+
+	/// The timestamp of each keyframe must be monotonically increasing.
+	#[error("timestamp went backwards")]
+	TimestampBackwards,
+
+	/// An error from the HTTP client.
+	#[error("http error: {0}")]
+	Http(Arc<reqwest::Error>),
+
+	/// Failed to parse a URL.
+	#[error("url parse error: {0}")]
+	Url(#[from] url::ParseError),
+
+	#[error("unknown format: {0}")]
+	UnknownFormat(String),
 }
 
 /// A Result type alias for hang operations.
@@ -65,5 +88,11 @@ pub type Result<T> = std::result::Result<T, Error>;
 impl From<serde_json::Error> for Error {
 	fn from(err: serde_json::Error) -> Self {
 		Error::Json(Arc::new(err))
+	}
+}
+
+impl From<reqwest::Error> for Error {
+	fn from(err: reqwest::Error) -> Self {
+		Error::Http(Arc::new(err))
 	}
 }

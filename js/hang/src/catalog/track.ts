@@ -1,8 +1,7 @@
-import { z } from "zod/v4-mini";
+import { z } from "zod";
 
 export const TrackSchema = z.object({
 	name: z.string(),
-	priority: z.uint32(), // TODO u8
+	priority: z.number().int().min(0).max(255),
 });
-
 export type Track = z.infer<typeof TrackSchema>;

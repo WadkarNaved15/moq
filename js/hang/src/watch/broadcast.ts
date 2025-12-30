@@ -1,122 +1,126 @@
-import type * as Moq from "@kixelated/moq";
-import { type Computed, type Effect, Root, Signal } from "@kixelated/signals";
+import type * as Moq from "@moq/lite";
+import { Effect, type Getter, Signal } from "@moq/signals";
 import * as Catalog from "../catalog";
-import type { Connection } from "../connection";
-import { Audio, type AudioProps } from "./audio";
+import { PRIORITY } from "../publish/priority";
+import * as Audio from "./audio";
 import { Chat, type ChatProps } from "./chat";
-import { Location, type LocationProps } from "./location";
-import { Video, type VideoProps } from "./video";
+import * as Location from "./location";
+import { Preview, type PreviewProps } from "./preview";
+import * as User from "./user";
+import * as Video from "./video";
 
 export interface BroadcastProps {
+	connection?: Moq.Connection.Established | Signal<Moq.Connection.Established | undefined>;
+
 	// Whether to start downloading the broadcast.
 	// Defaults to false so you can make sure everything is ready before starting.
-	enabled?: boolean;
+	enabled?: boolean | Signal<boolean>;
 
-	// The broadcast path relative to the connection URL.
-	// Defaults to ""
-	path?: string;
+	// The broadcast name.
+	path?: Moq.Path.Valid | Signal<Moq.Path.Valid | undefined>;
 
-	// You can disable reloading if you want to save a round trip when you know the broadcast is already live.
-	reload?: boolean;
+	// You can disable reloading if you don't want to wait for an announcement.
+	reload?: boolean | Signal<boolean>;
 
-	video?: VideoProps;
-	audio?: AudioProps;
-	location?: LocationProps;
+	video?: Video.SourceProps;
+	audio?: Audio.SourceProps;
+	location?: Location.Props;
 	chat?: ChatProps;
+	preview?: PreviewProps;
+	user?: User.Props;
 }
 
 // A broadcast that (optionally) reloads automatically when live/offline.
 export class Broadcast {
-	connection: Connection;
+	connection: Signal<Moq.Connection.Established | undefined>;
 
 	enabled: Signal<boolean>;
-	path: Signal<string>;
+	path: Signal<Moq.Path.Valid | undefined>;
 	status = new Signal<"offline" | "loading" | "live">("offline");
-	user: Computed<Catalog.User | undefined>;
+	reload: Signal<boolean>;
 
-	audio: Audio;
-	video: Video;
-	location: Location;
+	audio: Audio.Source;
+	video: Video.Source;
+	location: Location.Root;
 	chat: Chat;
+	preview: Preview;
+	user: User.Info;
 
-	#broadcast = new Signal<Moq.BroadcastConsumer | undefined>(undefined);
+	#broadcast = new Signal<Moq.Broadcast | undefined>(undefined);
 
 	#catalog = new Signal<Catalog.Root | undefined>(undefined);
-	readonly catalog = this.#catalog.readonly();
+	readonly catalog: Getter<Catalog.Root | undefined> = this.#catalog;
 
 	// This signal is true when the broadcast has been announced, unless reloading is disabled.
 	#active = new Signal(false);
-	readonly active = this.#active.readonly();
+	readonly active: Getter<boolean> = this.#active;
 
-	#reload: boolean;
-	signals = new Root();
+	signals = new Effect();
 
-	constructor(connection: Connection, props?: BroadcastProps) {
-		this.connection = connection;
-		this.path = new Signal(props?.path ?? "");
-		this.enabled = new Signal(props?.enabled ?? false);
-		this.audio = new Audio(this.#broadcast, this.#catalog, props?.audio);
-		this.video = new Video(this.#broadcast, this.#catalog, props?.video);
-		this.location = new Location(this.#broadcast, this.#catalog, props?.location);
+	constructor(props?: BroadcastProps) {
+		this.connection = Signal.from(props?.connection);
+		this.path = Signal.from(props?.path);
+		this.enabled = Signal.from(props?.enabled ?? false);
+		this.reload = Signal.from(props?.reload ?? true);
+		this.audio = new Audio.Source(this.#broadcast, this.#catalog, props?.audio);
+		this.video = new Video.Source(this.#broadcast, this.#catalog, props?.video);
+		this.location = new Location.Root(this.#broadcast, this.#catalog, props?.location);
 		this.chat = new Chat(this.#broadcast, this.#catalog, props?.chat);
-		this.#reload = props?.reload ?? true;
+		this.preview = new Preview(this.#broadcast, this.#catalog, props?.preview);
+		this.user = new User.Info(this.#catalog, props?.user);
 
-		this.user = this.signals.computed((effect) => effect.get(this.#catalog)?.user);
-
-		this.signals.effect(this.#runActive.bind(this));
+		this.signals.effect(this.#runReload.bind(this));
 		this.signals.effect(this.#runBroadcast.bind(this));
 		this.signals.effect(this.#runCatalog.bind(this));
 	}
 
-	#runActive(effect: Effect): void {
-		if (!effect.get(this.enabled)) return;
+	#runReload(effect: Effect): void {
+		const enabled = effect.get(this.enabled);
+		if (!enabled) return;
 
-		if (!this.#reload) {
-			this.#active.set(true);
-			effect.cleanup(() => this.#active.set(false));
+		const reload = effect.get(this.reload);
+		if (!reload) {
+			// Mark as active without waiting for an announcement.
+			effect.set(this.#active, true, false);
 			return;
 		}
 
-		const conn = effect.get(this.connection.established);
+		const conn = effect.get(this.connection);
 		if (!conn) return;
 
 		const path = effect.get(this.path);
+		if (path === undefined) return;
 
 		const announced = conn.announced(path);
 		effect.cleanup(() => announced.close());
 
-		effect.spawn(async (cancel) => {
+		effect.spawn(async () => {
 			for (;;) {
-				const update = await Promise.race([announced.next(), cancel]);
-
-				// We're donezo.
+				const update = await announced.next();
 				if (!update) break;
 
 				// Require full equality
-				if (update.path !== "") {
-					console.warn("ignoring suffix", update.path);
+				if (update.path !== path) {
+					console.warn("ignoring announce", update.path);
 					continue;
 				}
 
-				this.#active.set(update.active);
+				effect.set(this.#active, update.active, false);
 			}
 		});
 	}
 
 	#runBroadcast(effect: Effect): void {
-		const conn = effect.get(this.connection.established);
-		if (!conn) return;
-
-		if (!effect.get(this.enabled)) return;
-
+		const conn = effect.get(this.connection);
+		const enabled = effect.get(this.enabled);
 		const path = effect.get(this.path);
-		if (!effect.get(this.#active)) return;
+		const active = effect.get(this.#active);
+		if (!conn || !enabled || path === undefined || !active) return;
 
 		const broadcast = conn.consume(path);
 		effect.cleanup(() => broadcast.close());
 
-		this.#broadcast.set(broadcast);
-		effect.cleanup(() => this.#broadcast.set(undefined));
+		effect.set(this.#broadcast, broadcast);
 	}
 
 	#runCatalog(effect: Effect): void {
@@ -127,16 +131,16 @@ export class Broadcast {
 
 		this.status.set("loading");
 
-		const catalog = broadcast.subscribe("catalog.json", 0);
+		const catalog = broadcast.subscribe("catalog.json", PRIORITY.catalog);
 		effect.cleanup(() => catalog.close());
 
 		effect.spawn(this.#fetchCatalog.bind(this, catalog));
 	}
 
-	async #fetchCatalog(catalog: Moq.TrackConsumer, cancel: Promise<void>): Promise<void> {
+	async #fetchCatalog(catalog: Moq.Track): Promise<void> {
 		try {
 			for (;;) {
-				const update = await Promise.race([Catalog.fetch(catalog), cancel]);
+				const update = await Catalog.fetch(catalog);
 				if (!update) break;
 
 				console.debug("received catalog", this.path.peek(), update);
@@ -159,5 +163,7 @@ export class Broadcast {
 		this.video.close();
 		this.location.close();
 		this.chat.close();
+		this.preview.close();
+		this.user.close();
 	}
 }

@@ -7,6 +7,7 @@ on:
       - 'moq-clock-v*'
       # NOTE: The -cli is automatically removed
       - 'hang-cli-v*'
+      - 'moq-token-cli-v*'
 
 env:
   REGISTRY: docker.io/kixelated
@@ -22,7 +23,7 @@ jobs:
       id-token: write
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       # Figure out the docker image based on the tag
       - id: parse
@@ -49,14 +50,15 @@ jobs:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
-      # Build and push Docker image with Depot
+      # Build and push multi-arch Docker images using Depot
       - uses: depot/build-push-action@v1
         with:
           project: r257ctfqm6
-          file: rs/Dockerfile
-          context: rs
+          context: .
           push: true
-          target: ${{ steps.parse.outputs.target }}
+          # Make a smaller image by specifying the package to build
+          build-args: |
+            package=${{ steps.parse.outputs.target }}
           tags: |
             ${{ env.REGISTRY }}/${{ steps.parse.outputs.target }}:${{ steps.parse.outputs.version }}
             ${{ env.REGISTRY }}/${{ steps.parse.outputs.target }}:latest

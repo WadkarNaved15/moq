@@ -3,21 +3,22 @@ use axum::handler::HandlerWithoutStateExt;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::{http::Method, routing::get, Router};
-use hang::{cmaf, moq_lite};
-use hang::{BroadcastConsumer, BroadcastProducer};
-use moq_lite::web_transport;
+use hang::moq_lite;
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use tokio::io::AsyncRead;
+use std::sync::{Arc, RwLock};
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::ServeDir;
 
-pub async fn server<T: AsyncRead + Unpin>(
+use crate::Publish;
+
+pub async fn server(
 	config: moq_native::ServerConfig,
+	name: String,
 	public: Option<PathBuf>,
-	input: &mut T,
+	publish: Publish,
 ) -> anyhow::Result<()> {
-	let mut listen = config.listen.unwrap_or("[::]:443".parse().unwrap());
+	let mut listen = config.bind.unwrap_or("[::]:443".parse().unwrap());
 	listen = tokio::net::lookup_host(listen)
 		.await
 		.context("invalid listen address")?
@@ -25,19 +26,25 @@ pub async fn server<T: AsyncRead + Unpin>(
 		.context("invalid listen address")?;
 
 	let server = config.init()?;
-	let fingerprints = server.fingerprints().to_vec();
 
-	let producer = BroadcastProducer::new();
-	let consumer = producer.consume();
+	#[cfg(unix)]
+	// Notify systemd that we're ready.
+	let _ = sd_notify::notify(true, &[sd_notify::NotifyState::Ready]);
+
+	let tls_info = server.tls_info();
 
 	tokio::select! {
-		res = accept(server, consumer) => res,
-		res = publish(producer, input) => res,
-		res = web(listen, fingerprints, public) => res,
+		res = accept(server, name, publish.consume()) => res,
+		res = publish.run() => res,
+		res = web(listen, tls_info, public) => res,
 	}
 }
 
-async fn accept(mut server: moq_native::Server, consumer: BroadcastConsumer) -> anyhow::Result<()> {
+async fn accept(
+	mut server: moq_native::Server,
+	name: String,
+	consumer: moq_lite::BroadcastConsumer,
+) -> anyhow::Result<()> {
 	let mut conn_id = 0;
 
 	tracing::info!(addr = ?server.local_addr(), "listening");
@@ -46,58 +53,73 @@ async fn accept(mut server: moq_native::Server, consumer: BroadcastConsumer) -> 
 		let id = conn_id;
 		conn_id += 1;
 
-		let consumer = consumer.clone();
+		let name = name.clone();
 
+		let consumer = consumer.clone();
 		// Handle the connection in a new task.
 		tokio::spawn(async move {
-			let session: web_transport::Session = session.into();
-			let mut session = moq_lite::Session::accept(session)
-				.await
-				.expect("failed to accept session");
-
-			tracing::info!(?id, "accepted session");
-
-			// The path is relative to the URL, so it's empty because we only publish one broadcast.
-			session.publish("", consumer.inner.clone());
+			if let Err(err) = run_session(id, session, name, consumer).await {
+				tracing::warn!(%err, "failed to accept session");
+			}
 		});
 	}
 
 	Ok(())
 }
 
-async fn publish<T: AsyncRead + Unpin>(producer: BroadcastProducer, input: &mut T) -> anyhow::Result<()> {
-	let mut import = cmaf::Import::new(producer);
+#[tracing::instrument("session", skip_all, fields(id))]
+async fn run_session(
+	id: u64,
+	session: moq_native::Request,
+	name: String,
+	consumer: moq_lite::BroadcastConsumer,
+) -> anyhow::Result<()> {
+	// Blindly accept the session (WebTransport or QUIC), regardless of the URL.
+	let session = session.ok().await.context("failed to accept session")?;
 
-	import
-		.init_from(input)
+	// Create an origin producer to publish to the broadcast.
+	let origin = moq_lite::Origin::produce();
+	origin.producer.publish_broadcast(&name, consumer);
+
+	let session = moq_lite::Session::accept(session, origin.consumer, None)
 		.await
-		.context("failed to initialize cmaf from input")?;
+		.context("failed to accept session")?;
 
-	tracing::info!("initialized");
+	tracing::info!(id, "accepted session");
 
-	import.read_from(input).await?;
-
-	Ok(())
+	session.closed().await.map_err(Into::into)
 }
 
-// Run a HTTP server using Axum to serve the certificate fingerprint.
-async fn web(bind: SocketAddr, fingerprints: Vec<String>, public: Option<PathBuf>) -> anyhow::Result<()> {
-	// Get the first certificate's fingerprint.
-	// TODO serve all of them so we can support multiple signature algorithms.
-	let fingerprint = fingerprints.first().expect("missing certificate").clone();
-
+// Initialize the HTTP server (but don't serve yet).
+async fn web(
+	bind: SocketAddr,
+	tls_info: Arc<RwLock<moq_native::TlsInfo>>,
+	public: Option<PathBuf>,
+) -> anyhow::Result<()> {
 	async fn handle_404() -> impl IntoResponse {
 		(StatusCode::NOT_FOUND, "Not found")
 	}
 
+	let fingerprint_handler = move || async move {
+		// Get the first certificate's fingerprint.
+		// TODO serve all of them so we can support multiple signature algorithms.
+		tls_info
+			.read()
+			.expect("tls_info read lock poisoned")
+			.fingerprints
+			.first()
+			.expect("missing certificate")
+			.clone()
+	};
+
 	let mut app = Router::new()
-		.route("/certificate.sha256", get(fingerprint))
+		.route("/certificate.sha256", get(fingerprint_handler))
 		.layer(CorsLayer::new().allow_origin(Any).allow_methods([Method::GET]));
 
 	// If a public directory is provided, serve it.
 	// We use this for local development to serve the index.html file and friends.
 	if let Some(public) = public.as_ref() {
-		tracing::info!(?public, "serving directory");
+		tracing::info!(public = %public.display(), "serving directory");
 
 		let public = ServeDir::new(public).not_found_service(handle_404.into_service());
 		app = app.fallback_service(public);
@@ -105,7 +127,7 @@ async fn web(bind: SocketAddr, fingerprints: Vec<String>, public: Option<PathBuf
 		app = app.fallback_service(handle_404.into_service());
 	}
 
-	let server = hyper_serve::bind(bind);
+	let server = axum_server::bind(bind);
 	server.serve(app.into_make_service()).await?;
 
 	Ok(())

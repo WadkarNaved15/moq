@@ -1,12 +1,10 @@
+use crate::crypto;
 use anyhow::Context;
-use ring::digest::{digest, SHA256};
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::RootCertStore;
 use std::path::PathBuf;
 use std::{fs, io, net, sync::Arc, time};
 use url::Url;
-
-use web_transport::quinn as web_transport_quinn;
 
 #[derive(Clone, Default, Debug, clap::Args, serde::Serialize, serde::Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -16,15 +14,19 @@ pub struct ClientTls {
 	/// This value can be provided multiple times for multiple roots.
 	/// If this is empty, system roots will be used instead
 	#[serde(skip_serializing_if = "Vec::is_empty")]
-	#[arg(long = "tls-root")]
+	#[arg(id = "tls-root", long = "tls-root", env = "MOQ_CLIENT_TLS_ROOT")]
 	pub root: Vec<PathBuf>,
 
 	/// Danger: Disable TLS certificate verification.
 	///
 	/// Fine for local development and between relays, but should be used in caution in production.
-	// This is an Option<bool> so clap skips over it when not provided, otherwise it is set to false.
 	#[serde(skip_serializing_if = "Option::is_none")]
-	#[arg(long = "tls-disable-verify")]
+	#[arg(
+		id = "tls-disable-verify",
+		long = "tls-disable-verify",
+		env = "MOQ_CLIENT_TLS_DISABLE_VERIFY",
+		action = clap::ArgAction::SetTrue
+	)]
 	pub disable_verify: Option<bool>,
 }
 
@@ -32,7 +34,12 @@ pub struct ClientTls {
 #[serde(deny_unknown_fields, default)]
 pub struct ClientConfig {
 	/// Listen for UDP packets on the given address.
-	#[arg(long, id = "client-bind", default_value = "[::]:0")]
+	#[arg(
+		id = "client-bind",
+		long = "client-bind",
+		default_value = "[::]:0",
+		env = "MOQ_CLIENT_BIND"
+	)]
 	pub bind: net::SocketAddr,
 
 	#[command(flatten)]
@@ -64,7 +71,7 @@ pub struct Client {
 
 impl Client {
 	pub fn new(config: ClientConfig) -> anyhow::Result<Self> {
-		let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+		let provider = crypto::provider();
 
 		// Create a list of acceptable root certificates.
 		let mut roots = RootCertStore::empty();
@@ -74,7 +81,7 @@ impl Client {
 
 			// Log any errors that occurred while loading the native root certificates.
 			for err in native.errors {
-				tracing::warn!(?err, "failed to load root cert");
+				tracing::warn!(%err, "failed to load root cert");
 			}
 
 			// Add the platform's native root certificates.
@@ -112,12 +119,11 @@ impl Client {
 
 		let socket = std::net::UdpSocket::bind(config.bind).context("failed to bind UDP socket")?;
 
-		// Enable BBR congestion control
-		// TODO validate the implementation
+		// TODO Validate the BBR implementation before enabling it
 		let mut transport = quinn::TransportConfig::default();
 		transport.max_idle_timeout(Some(time::Duration::from_secs(10).try_into().unwrap()));
 		transport.keep_alive_interval(Some(time::Duration::from_secs(4)));
-		transport.congestion_controller_factory(Arc::new(quinn::congestion::BbrConfig::default()));
+		//transport.congestion_controller_factory(Arc::new(quinn::congestion::BbrConfig::default()));
 		transport.mtu_discovery_config(None); // Disable MTU discovery
 		let transport = Arc::new(transport);
 
@@ -170,8 +176,9 @@ impl Client {
 		}
 
 		let alpn = match url.scheme() {
-			"https" => web_transport::quinn::ALPN,
-			"moql" => moq_lite::ALPN,
+			"https" => web_transport_quinn::ALPN,
+			"moql" => moq_lite::lite::ALPN,
+			"moqt" => moq_lite::ietf::ALPN,
 			_ => anyhow::bail!("url scheme must be 'http', 'https', or 'moql'"),
 		};
 
@@ -188,10 +195,10 @@ impl Client {
 		let connection = self.quic.connect_with(config, ip, &host)?.await?;
 		tracing::Span::current().record("id", connection.stable_id());
 
-		let session = match url.scheme() {
-			"https" => web_transport::quinn::Session::connect(connection, url).await?,
-			moq_lite::ALPN => web_transport::quinn::Session::raw(connection, url),
-			_ => unreachable!(),
+		let session = match alpn {
+			web_transport_quinn::ALPN => web_transport_quinn::Session::connect(connection, url).await?,
+			moq_lite::lite::ALPN | moq_lite::ietf::ALPN => web_transport_quinn::Session::raw(connection, url),
+			_ => unreachable!("ALPN was checked above"),
 		};
 
 		Ok(session)
@@ -199,7 +206,7 @@ impl Client {
 }
 
 #[derive(Debug)]
-struct NoCertificateVerification(Arc<rustls::crypto::CryptoProvider>);
+struct NoCertificateVerification(crypto::Provider);
 
 impl rustls::client::danger::ServerCertVerifier for NoCertificateVerification {
 	fn verify_server_cert(
@@ -239,12 +246,12 @@ impl rustls::client::danger::ServerCertVerifier for NoCertificateVerification {
 // Verify the certificate matches a provided fingerprint.
 #[derive(Debug)]
 struct FingerprintVerifier {
-	provider: Arc<rustls::crypto::CryptoProvider>,
+	provider: crypto::Provider,
 	fingerprint: Vec<u8>,
 }
 
 impl FingerprintVerifier {
-	pub fn new(provider: Arc<rustls::crypto::CryptoProvider>, fingerprint: Vec<u8>) -> Self {
+	pub fn new(provider: crypto::Provider, fingerprint: Vec<u8>) -> Self {
 		Self { provider, fingerprint }
 	}
 }
@@ -258,7 +265,7 @@ impl rustls::client::danger::ServerCertVerifier for FingerprintVerifier {
 		_ocsp: &[u8],
 		_now: UnixTime,
 	) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
-		let fingerprint = digest(&SHA256, end_entity);
+		let fingerprint = crypto::sha256(&self.provider, end_entity);
 		if fingerprint.as_ref() == self.fingerprint.as_slice() {
 			Ok(rustls::client::danger::ServerCertVerified::assertion())
 		} else {

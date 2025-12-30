@@ -4,6 +4,8 @@ mod codec;
 pub use aac::*;
 pub use codec::*;
 
+use std::collections::BTreeMap;
+
 use bytes::Bytes;
 
 use serde::{Deserialize, Serialize};
@@ -11,17 +13,19 @@ use serde_with::{hex::Hex, DisplayFromStr};
 
 /// Information about an audio track in the catalog.
 ///
-/// This struct combines MoQ track information with audio-specific configuration
-/// including codec details, sample rate, and channel information.
+/// This struct contains a map of renditions (different quality/codec options)
 #[serde_with::serde_as]
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde_with::skip_serializing_none]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct Audio {
-	// Generic information about the track
-	pub track: moq_lite::Track,
+	/// A map of track name to rendition configuration.
+	/// This is not an array so it will work with JSON Merge Patch.
+	/// We use a BTreeMap so keys are sorted alphabetically for *some* deterministic behavior.
+	pub renditions: BTreeMap<String, AudioConfig>,
 
-	// The configuration of the audio track
-	pub config: AudioConfig,
+	/// The priority of the audio track, relative to other tracks in the broadcast.
+	pub priority: u8,
 }
 
 /// Audio decoder configuration based on WebCodecs AudioDecoderConfig.

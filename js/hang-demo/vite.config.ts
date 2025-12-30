@@ -7,6 +7,7 @@ export default defineConfig({
         plugins: [tailwindcss(), solidPlugin()],
         build: {
                 target: "esnext",
+		sourcemap: process.env.NODE_ENV === "production" ? false : "inline",
                 rollupOptions: {
                         input: {
                                 watch: "index.html",
@@ -19,6 +20,10 @@ export default defineConfig({
         server: {
                 // TODO: properly support HMR
                 hmr: false,
-                allowedHosts: ['xn--tlay-0ra.com','tülay.com']
+                allowedHosts: ['xn--tlay-0ra.com','heeriya.com']
         },
+	optimizeDeps: {
+		// No idea why this needs to be done, but I don't want to figure it out.
+		exclude: ["@libav.js/variant-opus-af"],
+	},
 });

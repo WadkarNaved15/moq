@@ -1,56 +1,49 @@
 {
-	"name": "@kixelated/hang",
+	"name": "@moq/hang",
 	"type": "module",
-	"version": "0.2.5",
+	"version": "0.1.0",
 	"description": "Media over QUIC library",
 	"license": "(MIT OR Apache-2.0)",
-	"repository": "github:kixelated/moq",
+	"repository": "github:moq-dev/moq",
 	"exports": {
 		".": "./src/index.ts",
 		"./publish": "./src/publish/index.ts",
-		"./publish/element": "./src/publish/element.tsx",
+		"./publish/element": "./src/publish/element.ts",
 		"./watch": "./src/watch/index.ts",
-		"./watch/element": "./src/watch/element.tsx",
+		"./watch/element": "./src/watch/element.ts",
 		"./meet": "./src/meet/index.ts",
-		"./meet/element": "./src/meet/element.tsx",
+		"./meet/element": "./src/meet/element.ts",
 		"./catalog": "./src/catalog/index.ts",
-		"./container": "./src/container/index.ts",
 		"./support": "./src/support/index.ts",
-		"./support/element": "./src/support/element.tsx",
-		"./connection": "./src/connection.ts"
+		"./support/element": "./src/support/element.ts"
 	},
 	"sideEffects": [
 		"./src/publish/element.ts",
 		"./src/watch/element.ts",
 		"./src/support/element.ts",
-		"./src/meet/element.tsx"
-	],
-	"files": [
-		"./src",
-		"./dist",
-		"README.md",
-		"tsconfig.json"
+		"./src/meet/element.ts"
 	],
 	"scripts": {
-		"build": "vite build && tsc -b",
+		"build": "rimraf dist && tsc -b && bun ../scripts/package.ts",
 		"check": "tsc --noEmit",
-		"release": "tsx ../scripts/release.ts"
+		"test": "vitest",
+		"release": "bun ../scripts/release.ts"
 	},
 	"dependencies": {
-		"@kixelated/moq": "workspace:^0.6.1",
-		"@kixelated/signals": "workspace:^0.3.0",
-		"buffer": "^6.0.3",
-		"zod": "^3.25.62"
-	},
-	"peerDependencies": {
-		"solid-js": "^1.9.7"
+		"@kixelated/libavjs-webcodecs-polyfill": "^0.5.5",
+		"@moq/lite": "workspace:^",
+		"@moq/signals": "workspace:^",
+		"@libav.js/variant-opus-af": "^6.8.8",
+		"async-mutex": "^0.5.0",
+		"comlink": "^4.4.2",
+		"zod": "^4.1.5"
 	},
 	"devDependencies": {
 		"@types/audioworklet": "^0.0.77",
 		"@typescript/lib-dom": "npm:@types/web@^0.0.241",
 		"fast-glob": "^3.3.3",
-		"typescript": "^5.8.3",
-		"vite": "^6.3.5",
-		"vite-plugin-solid": "^2.11.6"
+		"rimraf": "^6.0.1",
+		"typescript": "^5.9.2",
+		"vitest": "^3.2.4"
 	}
 }

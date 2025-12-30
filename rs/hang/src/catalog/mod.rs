@@ -6,11 +6,17 @@
 //! tracks to discover and choose appropriate tracks for their capabilities.
 
 mod audio;
-mod location;
+mod chat;
+mod preview;
 mod root;
+mod track;
+mod user;
 mod video;
 
 pub use audio::*;
-pub use location::*;
+pub use chat::*;
+pub use preview::*;
 pub use root::*;
+pub use track::*;
+pub use user::*;
 pub use video::*;

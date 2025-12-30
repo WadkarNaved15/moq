@@ -1,7 +1,9 @@
-export * from "./audio";
+export * as Audio from "./audio";
 export * from "./broadcast";
-export * from "./location";
-export * from "./video";
+export * as Chat from "./chat";
+export * as Location from "./location";
+export * from "./preview";
+export * as Video from "./video";
 
 // NOTE: element is not exported from this module
-// You have to import it from @kixelated/hang/watch/element instead.
+// You have to import it from @moq/hang/watch/element instead.

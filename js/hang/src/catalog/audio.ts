@@ -1,6 +1,12 @@
-import { z } from "zod/v4-mini";
+import { z } from "zod";
+import { ContainerSchema, DEFAULT_CONTAINER } from "./container";
+import { u53Schema } from "./integers";
 
-import { TrackSchema } from "./track";
+// Backwards compatibility: old track schema
+const TrackSchema = z.object({
+	name: z.string(),
+	priority: z.number().int().min(0).max(255),
+});
 
 // Mirrors AudioDecoderConfig
 // https://w3c.github.io/webcodecs/#audio-decoder-config
@@ -8,29 +14,47 @@ export const AudioConfigSchema = z.object({
 	// See: https://w3c.github.io/webcodecs/codec_registry.html
 	codec: z.string(),
 
+	// Container format for timestamp encoding
+	// Defaults to "legacy" when not specified in catalog (backward compatibility)
+	container: ContainerSchema.default(DEFAULT_CONTAINER),
+
 	// The description is used for some codecs.
 	// If provided, we can initialize the decoder based on the catalog alone.
 	// Otherwise, the initialization information is in-band.
-	description: z.optional(z.string()), // hex encoded TODO use base64
+	description: z.string().optional(), // hex encoded TODO use base64
 
 	// The sample rate of the audio in Hz
-	sampleRate: z.uint32(),
+	sampleRate: u53Schema,
 
 	// The number of channels in the audio
-	numberOfChannels: z.uint32(),
+	numberOfChannels: u53Schema,
 
 	// The bitrate of the audio in bits per second
 	// TODO: Support up to Number.MAX_SAFE_INTEGER
-	bitrate: z.optional(z.uint32()),
+	bitrate: u53Schema.optional(),
 });
 
-export const AudioSchema = z.object({
-	// The MoQ track information.
-	track: TrackSchema,
+export const AudioSchema = z
+	.object({
+		// A map of track name to rendition configuration.
+		// This is not an array so it will work with JSON Merge Patch.
+		renditions: z.record(z.string(), AudioConfigSchema),
 
-	// The configuration of the audio track
-	config: AudioConfigSchema,
-});
+		// The priority of the audio track, relative to other tracks in the broadcast.
+		priority: z.number().int().min(0).max(255),
+	})
+	.or(
+		// Backwards compatibility: transform old {track, config} format to new object format
+		z
+			.object({
+				track: TrackSchema,
+				config: AudioConfigSchema,
+			})
+			.transform((old) => ({
+				renditions: { [old.track.name]: old.config },
+				priority: old.track.priority,
+			})),
+	);
 
 export type Audio = z.infer<typeof AudioSchema>;
 export type AudioConfig = z.infer<typeof AudioConfigSchema>;

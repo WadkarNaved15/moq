@@ -4,6 +4,7 @@
 		"target": "esnext",
 		"module": "esnext",
 		"moduleResolution": "bundler",
+		"rewriteRelativeImportExtensions": true,
 
 		"declaration": true,
 		"declarationMap": true,
@@ -20,7 +21,7 @@
 		"noImplicitOverride": true,
 		"noImplicitReturns": true,
 		"noImplicitThis": true,
-		"noPropertyAccessFromIndexSignature": true,
+		"noPropertyAccessFromIndexSignature": false, // Allows . notation
 		"noUncheckedIndexedAccess": false, // Allows [0] access to arrays
 		"noUnusedLocals": true,
 		"noUnusedParameters": true,
@@ -36,5 +37,8 @@
 		"erasableSyntaxOnly": true,
 
 		"skipLibCheck": true
-	}
+	},
+	// Include something just so TS doesn't complain about not matching files
+	"include": ["scripts"],
+	"exclude": ["**/node_modules", "**/dist", "**/target"]
 }

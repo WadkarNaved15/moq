@@ -13,13 +13,18 @@ pub use web::*;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let config = Config::load()?;
+	// TODO: It would be nice to remove this and rely on feature flags only.
+	// However, some dependency is pulling in `ring` and I don't know why, so meh for now.
+	rustls::crypto::aws_lc_rs::default_provider()
+		.install_default()
+		.expect("failed to install default crypto provider");
 
-    let addr = config.server.listen.unwrap_or("[::]:443".parse().unwrap());
-    let mut server = config.server.init()?;
-    let client = config.client.init()?;
-    let auth = config.auth.init()?;
-    let fingerprints = server.fingerprints().to_vec();
+	let config = Config::load()?;
+
+	let addr = config.server.bind.unwrap_or("[::]:443".parse().unwrap());
+	let mut server = config.server.init()?;
+	let client = config.client.init()?;
+	let auth = config.auth.init()?;
 
     let cluster = Cluster::new(config.cluster, client);
 
@@ -29,59 +34,45 @@ async fn main() -> anyhow::Result<()> {
         cloned.run().await.expect("cluster failed");
     });
 
-    // 🔁 Periodically log active broadcasts
-    let producer = cluster.origin_producer().clone();
-    tokio::spawn(async move {
-        loop {
-            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-            producer.log_active_broadcasts();
-        }
-    });
-
-    // Create and run web server
-    let web = Web::new(WebConfig {
-        bind: addr,
-        fingerprints,
-        cluster: cluster.clone(),
-    });
+	// Create a web server too.
+	let web = Web::new(
+		WebState {
+			auth: auth.clone(),
+			cluster: cluster.clone(),
+			tls_info: server.tls_info(),
+			conn_id: Default::default(),
+		},
+		config.web,
+	);
 
     tokio::spawn(async move {
         web.run().await.expect("failed to run web server");
     });
 
-    tracing::info!(%addr, "listening");
+	tracing::info!(%addr, "listening");
+
+	#[cfg(unix)]
+	// Notify systemd that we're ready after all initialization is complete
+	let _ = sd_notify::notify(true, &[sd_notify::NotifyState::Ready]);
 
     let mut conn_id = 0;
 
-    while let Some(conn) = server.accept().await {
-         info!("📥 Received WebTransport connection from: {}", conn.remote_address());
-let mut token = match auth.validate(conn.url()) {
-    Ok(token) => token,
-    Err(err) => {
-        tracing::warn!(?err, "failed to validate token");
-        conn.close(1, b"invalid token");
-        continue;
-    }
-};
+	while let Some(request) = server.accept().await {
+		let conn = Connection {
+			id: conn_id,
+			request,
+			cluster: cluster.clone(),
+			auth: auth.clone(),
+		};
 
-// 🛠️ Add defaults if missing
-/*if token.publish.is_none() {
-    token.publish = Some("my-broadcast".into());
-}
-if token.subscribe.is_none() {
-    token.subscribe = Some("my-broadcast".into());
-}*/
-
-        let conn = Connection {
-            id: conn_id,
-            session: conn.into(),
-            cluster: cluster.clone(),
-            token,
-        };
-        info!(id = conn_id, "🚀 Spawning Connection::run");
-        conn_id += 1;
-        tokio::spawn(conn.run());
-    }
+		conn_id += 1;
+		tokio::spawn(async move {
+			let err = conn.run().await;
+			if let Err(err) = err {
+				tracing::warn!(%err, "connection closed");
+			}
+		});
+	}
 
     Ok(())
 }

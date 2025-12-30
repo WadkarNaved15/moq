@@ -1,41 +1,42 @@
-import { type Connection, type Moq, type Publish, Watch } from "@kixelated/hang";
-import { type Effect, Root, Signal } from "@kixelated/signals";
+import type { Path } from "@moq/lite";
+import { Effect, Signal } from "@moq/signals";
+import { type Moq, type Publish, Watch } from "..";
 
 export type Broadcast = Watch.Broadcast | Publish.Broadcast;
 
 export type RoomProps = {
-	path?: string;
+	connection: Moq.Connection.Established | Signal<Moq.Connection.Established | undefined>;
+	path?: Path.Valid | Signal<Path.Valid | undefined>;
 };
 
 export class Room {
 	// The connection to the server.
-	// This is reactive; it may still be pending.
-	connection: Connection;
+	connection: Signal<Moq.Connection.Established | undefined>;
 
-	// An optional path to append to the connection url.
-	path: Signal<string>;
+	// An optional prefix to filter broadcasts by.
+	path: Signal<Path.Valid | undefined>;
 
 	// The active broadcasts, sorted by announcement time.
-	active = new Map<string, Broadcast>();
+	active = new Map<Path.Valid, Broadcast>();
 
 	// All of the remote broadcasts.
-	remotes = new Map<string, Watch.Broadcast>();
+	remotes = new Map<Path.Valid, Watch.Broadcast>();
 
 	// The local broadcasts.
-	locals = new Map<string, Publish.Broadcast>();
+	locals = new Map<Path.Valid, Publish.Broadcast>();
 
 	// Optional callbacks to learn when individual broadcasts are added/removed.
 	// We avoid using signals because we don't want to re-render everything on every update.
 	// One day I'll figure out how to handle collections elegantly.
-	#onActive?: (path: string, broadcast: Broadcast | undefined) => void;
-	#onRemote?: (path: string, broadcast: Watch.Broadcast | undefined) => void;
-	#onLocal?: (path: string, broadcast: Publish.Broadcast | undefined) => void;
+	#onActive?: (path: Path.Valid, broadcast: Broadcast | undefined) => void;
+	#onRemote?: (path: Path.Valid, broadcast: Watch.Broadcast | undefined) => void;
+	#onLocal?: (path: Path.Valid, broadcast: Publish.Broadcast | undefined) => void;
 
-	#signals = new Root();
+	#signals = new Effect();
 
-	constructor(connection: Connection, props?: RoomProps) {
-		this.connection = connection;
-		this.path = new Signal(props?.path ?? "");
+	constructor(props?: RoomProps) {
+		this.connection = Signal.from(props?.connection);
+		this.path = Signal.from(props?.path);
 
 		this.#signals.effect(this.#init.bind(this));
 	}
@@ -43,80 +44,65 @@ export class Room {
 	// Render a local broadcast instead of downloading a remote broadcast.
 	// This is not a perfect preview, as downloading/decoding is skipped.
 	// NOTE: The broadcast is only published when broadcast.enabled is true.
-	preview(path: string, broadcast: Publish.Broadcast) {
+	preview(path: Path.Valid, broadcast: Publish.Broadcast) {
 		this.locals.set(path, broadcast);
 	}
 
-	unpreview(path: string) {
+	unpreview(path: Path.Valid) {
 		this.locals.delete(path);
 	}
 
 	// Register a callback when a broadcast has been added/removed.
-	onActive(callback?: (path: string, broadcast: Broadcast | undefined) => void) {
+	onActive(callback?: (path: Path.Valid, broadcast: Broadcast | undefined) => void) {
 		this.#onActive = callback;
 		if (!callback) return;
 
-		for (const [path, broadcast] of this.active) {
-			callback(path, broadcast);
+		for (const [name, broadcast] of this.active) {
+			callback(name, broadcast);
 		}
 	}
 
-	onRemote(callback?: (path: string, broadcast: Watch.Broadcast | undefined) => void) {
+	onRemote(callback?: (path: Path.Valid, broadcast: Watch.Broadcast | undefined) => void) {
 		this.#onRemote = callback;
 		if (!callback) return;
 
-		for (const [path, broadcast] of this.remotes) {
-			callback(path, broadcast);
+		for (const [name, broadcast] of this.remotes) {
+			callback(name, broadcast);
 		}
 	}
 
-	onLocal(callback?: (path: string, broadcast: Publish.Broadcast | undefined) => void) {
+	onLocal(callback?: (path: Path.Valid, broadcast: Publish.Broadcast | undefined) => void) {
 		this.#onLocal = callback;
 		if (!callback) return;
 
-		for (const [path, broadcast] of this.locals) {
-			callback(path, broadcast);
+		for (const [name, broadcast] of this.locals) {
+			callback(name, broadcast);
 		}
 	}
 
 	#init(effect: Effect) {
-		const url = effect.get(this.connection.url);
-		if (!url) return;
-
-		const connection = effect.get(this.connection.established);
+		const connection = effect.get(this.connection);
 		if (!connection) return;
 
-		// Make sure the path ends with a slash so it's used as the room name.
-		// Otherwise `path="de" would be a superset of `path="demo/", which is probably not what you want.
-		// We also include the url because path is optional, and we need to make sure it ends with a slash too.
-		// TODO add a slash to the URL on the server side instead?
-		let path = effect.get(this.path);
-		if (!`${url}${path}`.endsWith("/")) {
-			path = `${path}/`;
-		}
+		const url = connection.url;
+		if (!url) return;
 
-		const announced = connection.announced(path);
+		const name = effect.get(this.path);
+
+		const announced = connection.announced(name);
 		effect.cleanup(() => announced.close());
 
-		effect.spawn(this.#runRemotes.bind(this, announced));
-	}
-
-	async #runRemotes(announced: Moq.AnnouncedConsumer, cancel: Promise<void>) {
-		try {
+		effect.spawn(async () => {
 			for (;;) {
-				const update = await Promise.race([announced.next(), cancel]);
-
-				// We're donezo.
+				const update = await announced.next();
 				if (!update) break;
 
 				this.#handleUpdate(update);
 			}
-		} finally {
-			this.close();
-		}
+		});
 	}
 
-	#handleUpdate(update: Moq.Announce) {
+	#handleUpdate(update: Moq.AnnouncedEntry) {
 		for (const [path, broadcast] of this.locals) {
 			if (update.path === path) {
 				if (update.active) {
@@ -134,7 +120,8 @@ export class Room {
 
 		if (update.active) {
 			// NOTE: If you were implementing this yourself, you could use the <hang-watch> element instead.
-			const watch = new Watch.Broadcast(this.connection, {
+			const watch = new Watch.Broadcast({
+				connection: this.connection,
 				// NOTE: You're responsible for setting enabled to true if you want to download the broadcast.
 				enabled: false,
 				path: update.path,
@@ -172,17 +159,17 @@ export class Room {
 		this.locals = new Map();
 
 		// Clear all remote/active broadcasts when there are no more announcements.
-		for (const [path, broadcast] of remotes) {
+		for (const [name, broadcast] of remotes) {
 			broadcast.close();
-			this.#onRemote?.(path, undefined);
+			this.#onRemote?.(name, undefined);
 		}
 
-		for (const path of locals.keys()) {
-			this.#onLocal?.(path, undefined);
+		for (const name of locals.keys()) {
+			this.#onLocal?.(name, undefined);
 		}
 
-		for (const path of active.keys()) {
-			this.#onActive?.(path, undefined);
+		for (const name of active.keys()) {
+			this.#onActive?.(name, undefined);
 		}
 	}
 }

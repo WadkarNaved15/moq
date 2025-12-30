@@ -1,7 +1,11 @@
-export * from "./audio";
+export * as Audio from "./audio";
 export * from "./broadcast";
-export * from "./location";
-export * from "./video";
+export * as Chat from "./chat";
+export * as Location from "./location";
+export * from "./preview";
+export * as Source from "./source";
+export * as User from "./user";
+export * as Video from "./video";
 
 // NOTE: element is not exported from this module
-// You have to import it from @kixelated/hang/publish/element instead.
+// You have to import it from @moq/hang/publish/element instead.

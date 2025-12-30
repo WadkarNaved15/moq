@@ -10,24 +10,51 @@ pub use h264::*;
 pub use h265::*;
 pub use vp9::*;
 
+use std::collections::BTreeMap;
+
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use serde_with::{hex::Hex, DisplayFromStr};
 
 /// Information about a video track in the catalog.
 ///
-/// This struct combines MoQ track information with video-specific configuration
-/// including codec details, resolution, and encoding parameters.
+/// This struct contains a map of renditions (different quality/codec options)
+/// and optional metadata like detection, display settings, rotation, and flip.
 #[serde_with::serde_as]
 #[serde_with::skip_serializing_none]
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct Video {
-	/// MoQ specific track information
-	pub track: moq_lite::Track,
+	/// A map of track name to rendition configuration.
+	/// This is not an array in order for it to work with JSON Merge Patch.
+	/// We use a BTreeMap so keys are sorted alphabetically for *some* deterministic behavior.
+	pub renditions: BTreeMap<String, VideoConfig>,
 
-	/// The configuration of the video track
-	pub config: VideoConfig,
+	/// The priority of the video track, relative to other tracks in the broadcast.
+	pub priority: u8,
+
+	/// Render the video at this size in pixels.
+	/// This is separate from the display aspect ratio because it does not require reinitialization.
+	#[serde(default)]
+	pub display: Option<Display>,
+
+	/// The rotation of the video in degrees.
+	/// Default: 0
+	#[serde(default)]
+	pub rotation: Option<f64>,
+
+	/// If true, the decoder will flip the video horizontally
+	/// Default: false
+	#[serde(default)]
+	pub flip: Option<bool>,
+}
+
+/// Display size for rendering video
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Display {
+	pub width: u32,
+	pub height: u32,
 }
 
 /// Video decoder configuration based on WebCodecs VideoDecoderConfig.
@@ -82,14 +109,4 @@ pub struct VideoConfig {
 	/// Default: true
 	#[serde(default)]
 	pub optimize_for_latency: Option<bool>,
-
-	// The rotation of the video in degrees
-	// Default: 0
-	#[serde(default)]
-	pub rotation: Option<f64>,
-
-	// If true, the decoder will flip the video horizontally
-	// Default: false
-	#[serde(default)]
-	pub flip: Option<bool>,
 }

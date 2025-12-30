@@ -1,5 +1,6 @@
 use url::Url;
 
+use anyhow::Context;
 use clap::Parser;
 
 mod clock;
@@ -8,8 +9,12 @@ use moq_lite::*;
 #[derive(Parser, Clone)]
 pub struct Config {
 	/// Connect to the given URL starting with https://
-	#[arg()]
+	#[arg(long)]
 	pub url: Url,
+
+	/// The name of the broadcast to publish or subscribe to.
+	#[arg(long)]
+	pub broadcast: String,
 
 	/// The MoQ client configuration.
 	#[command(flatten)]
@@ -44,7 +49,6 @@ async fn main() -> anyhow::Result<()> {
 	tracing::info!(url = ?config.url, "connecting to server");
 
 	let session = client.connect(config.url).await?;
-	let mut session = moq_lite::Session::connect(session).await?;
 
 	let track = Track {
 		name: config.track,
@@ -53,21 +57,56 @@ async fn main() -> anyhow::Result<()> {
 
 	match config.role {
 		Command::Publish => {
-			let mut broadcast = BroadcastProducer::new();
-			let track = broadcast.create(track);
+			let mut broadcast = moq_lite::Broadcast::produce();
+			let track = broadcast.producer.create_track(track);
 			let clock = clock::Publisher::new(track);
 
-			// The broadcast name is empty because the URL contains the name.
-			session.publish("", broadcast.consume());
-			clock.run().await
+			let origin = moq_lite::Origin::produce();
+			origin.producer.publish_broadcast(&config.broadcast, broadcast.consumer);
+
+			let session = moq_lite::Session::connect(session, origin.consumer, None).await?;
+
+			tokio::select! {
+				res = session.closed() => res.map_err(Into::into),
+				_ = clock.run() => Ok(()),
+			}
 		}
 		Command::Subscribe => {
-			// The broadcast name is empty because the URL contains the name.
-			let broadcast = session.consume("");
-			let track = broadcast.subscribe(&track);
-			let clock = clock::Subscriber::new(track);
+			let origin = moq_lite::Origin::produce();
+			let session = moq_lite::Session::connect(session, None, Some(origin.producer)).await?;
 
-			clock.run().await
+			// NOTE: We could just call `session.consume_broadcast(&config.broadcast)` instead,
+			// However that won't work with IETF MoQ and the current OriginConsumer API the moment.
+			// So instead we do the cooler thing and loop while the broadcast is announced.
+
+			tracing::info!(broadcast = %config.broadcast, "waiting for broadcast to be online");
+
+			let path: moq_lite::Path<'_> = config.broadcast.into();
+			let mut origin = origin
+				.consumer
+				.consume_only(&[path])
+				.context("not allowed to consume broadcast")?;
+
+			// The current subscriber if any, dropped after each announce.
+			let mut clock: Option<clock::Subscriber> = None;
+
+			loop {
+				tokio::select! {
+					Some(announce) = origin.announced() => match announce {
+						(path, Some(broadcast)) => {
+							tracing::info!(broadcast = %path, "broadcast is online, subscribing to track");
+							let track = broadcast.subscribe_track(&track);
+							clock = Some(clock::Subscriber::new(track));
+						}
+						(path, None) => {
+							tracing::warn!(broadcast = %path, "broadcast is offline, waiting...");
+						}
+					},
+					res = session.closed() => return res.context("session closed"),
+					// NOTE: This drops clock when a new announce arrives, canceling it.
+					Some(res) = async { Some(clock.take()?.run().await) } => res.context("clock error")?,
+				}
+			}
 		}
 	}
 }

@@ -1,5 +1,6 @@
 use anyhow::Context;
 use clap::{Parser, Subcommand};
+use moq_token::Algorithm;
 use std::{io, path::PathBuf};
 
 #[derive(Debug, Parser)]
@@ -23,27 +24,30 @@ enum Commands {
 	Generate {
 		/// The algorithm to use.
 		#[arg(long, default_value = "HS256")]
-		algorithm: moq_token::Algorithm,
+		algorithm: Algorithm,
 
 		/// An optional key ID, useful for rotating keys.
 		#[arg(long)]
 		id: Option<String>,
+
+		/// Optional path to save the public key (for asymmetric algorithms).
+		#[arg(long)]
+		public: Option<PathBuf>,
 	},
 
 	/// Sign a token to stdout, reading the key from stdin.
 	Sign {
-		/// The URL path that this token is valid for, minus the starting `/`.
-		///
-		/// This path is the root for all other publish/subscribe paths below.
-		/// If the combined path ends with a `/`, then it's treated as a prefix.
-		/// If the combined path does not end with a `/`, then it's treated as a specific broadcast.
-		#[arg(long)]
-		path: String,
+		/// The root path for the token.
+		/// The user MUST connect to this WebTransport path and any broadcasts are relative to it.
+		/// Any trailing/leading slashes are ignored.
+		#[arg(long, default_value = "")]
+		root: String,
 
-		/// If specified, the user can publish any matching broadcasts.
+		/// If specified, the user can publish any matching path prefixes.
 		/// If not specified, the user will not publish any broadcasts.
+		/// This can be specified multiple times to publish multiple paths.
 		#[arg(long)]
-		publish: Option<String>,
+		publish: Vec<String>,
 
 		/// If true, then this client is considered a cluster node.
 		/// Both the client and server will only announce broadcasts from non-cluster clients.
@@ -51,10 +55,11 @@ enum Commands {
 		#[arg(long)]
 		cluster: bool,
 
-		/// If specified, the user can subscribe to any matching broadcasts.
+		/// If specified, the user can subscribe to any matching path prefixes.
 		/// If not specified, the user will not receive announcements and cannot subscribe to any broadcasts.
+		/// This can be specified multiple times to subscribe to multiple paths.
 		#[arg(long)]
-		subscribe: Option<String>,
+		subscribe: Vec<String>,
 
 		/// The expiration time of the token as a unix timestamp.
 		#[arg(long, value_parser = parse_unix_timestamp)]
@@ -66,24 +71,27 @@ enum Commands {
 	},
 
 	/// Verify a token from stdin, writing the payload to stdout.
-	Verify {
-		/// The expected path of the token.
-		#[arg(long)]
-		path: String,
-	},
+	/// NOTE: You still need to verify that the path is valid for the token.
+	/// This just verifies the signature.
+	Verify,
 }
 
 fn main() -> anyhow::Result<()> {
 	let cli = Cli::parse();
 
 	match cli.command {
-		Commands::Generate { algorithm, id } => {
-			let key = moq_token::Key::generate(algorithm, id);
-			key.to_file(cli.key)?;
+		Commands::Generate { algorithm, id, public } => {
+			let key = moq_token::Key::generate(algorithm, id)?;
+
+			if let Some(public) = public {
+				key.to_public()?.to_file(public)?;
+			}
+
+			key.to_file(&cli.key)?;
 		}
 
 		Commands::Sign {
-			path,
+			root,
 			publish,
 			cluster,
 			subscribe,
@@ -93,7 +101,7 @@ fn main() -> anyhow::Result<()> {
 			let key = moq_token::Key::from_file(cli.key)?;
 
 			let payload = moq_token::Claims {
-				path,
+				root,
 				publish,
 				cluster,
 				subscribe,
@@ -101,16 +109,16 @@ fn main() -> anyhow::Result<()> {
 				issued,
 			};
 
-			let token = key.sign(&payload)?;
-			println!("{}", token);
+			let token = key.encode(&payload)?;
+			println!("{token}");
 		}
 
-		Commands::Verify { path } => {
+		Commands::Verify => {
 			let key = moq_token::Key::from_file(cli.key)?;
-			let token = io::read_to_string(io::stdin())?;
-			let payload = key.verify(&token, &path)?;
+			let token = io::read_to_string(io::stdin())?.trim().to_string();
+			let payload = key.decode(&token)?;
 
-			println!("{:#?}", payload);
+			println!("{payload:#?}");
 		}
 	}
 

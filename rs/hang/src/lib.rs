@@ -11,18 +11,18 @@
 //! - **Catalog**: A list of available tracks and their metadata.
 //! - **Codec support**: Integration with common audio/video codecs
 //! - **Container**: A simple timestamped container format.
-//! - **CMAF Import**: Convert a fMP4 file into a hang broadcast.
+//! - **fMP4 Import**: Convert a fMP4 file into a hang broadcast.
+//! - **HLS Import**: Reusable HLS/fMP4 ingest logic via [`hls`].
 //!
 mod error;
-mod model;
 
 pub mod catalog;
-pub mod cmaf;
 pub mod feedback;
+pub mod import;
+pub mod model;
 
 // export the moq-lite version in use
 pub use moq_lite;
 
-pub use catalog::{Catalog, CatalogConsumer, CatalogProducer};
 pub use error::*;
 pub use model::*;
